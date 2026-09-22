@@ -1,0 +1,133 @@
+# Warehouse layout definition
+# Legend:
+#   W = wall, S = shelf, . = floor, C = charging station
+#   P = packing station, R = receiving area, H = shipping area
+#   1-5 = aisle markers (A1-A5)
+
+aisles:
+  - name: A1
+    orientation: vertical
+    col: 4
+    row_start: 2
+    row_end: 15
+
+  - name: A2
+    orientation: vertical
+    col: 8
+    row_start: 2
+    row_end: 15
+
+  - name: A3
+    orientation: vertical
+    col: 12
+    row_start: 2
+    row_end: 15
+
+  - name: A4
+    orientation: vertical
+    col: 16
+    row_start: 2
+    row_end: 15
+
+  - name: A5
+    orientation: vertical
+    col: 20
+    row_start: 2
+    row_end: 15
+
+shelves:
+  # Shelves flanking each aisle (left and right)
+  - label: "S-A1L"
+    col: 3
+    row_start: 3
+    row_end: 14
+  - label: "S-A1R"
+    col: 5
+    row_start: 3
+    row_end: 14
+
+  - label: "S-A2L"
+    col: 7
+    row_start: 3
+    row_end: 14
+  - label: "S-A2R"
+    col: 9
+    row_start: 3
+    row_end: 14
+
+  - label: "S-A3L"
+    col: 11
+    row_start: 3
+    row_end: 14
+  - label: "S-A3R"
+    col: 13
+    row_start: 3
+    row_end: 14
+
+  - label: "S-A4L"
+    col: 15
+    row_start: 3
+    row_end: 14
+  - label: "S-A4R"
+    col: 17
+    row_start: 3
+    row_end: 14
+
+  - label: "S-A5L"
+    col: 19
+    row_start: 3
+    row_end: 14
+  - label: "S-A5R"
+    col: 21
+    row_start: 3
+    row_end: 14
+
+stations:
+  charging:
+    position: [1, 16]
+    size: [2, 2]
+
+  packing:
+    position: [10, 16]
+    size: [3, 2]
+
+  receiving:
+    position: [1, 0]
+    size: [3, 2]
+
+  shipping:
+    position: [18, 16]
+    size: [3, 2]
+
+# Pickup points – one per aisle, mid-way
+pickup_points:
+  - name: "Pick-A1"
+    aisle: A1
+    position: [4, 8]
+  - name: "Pick-A2"
+    aisle: A2
+    position: [8, 8]
+  - name: "Pick-A3"
+    aisle: A3
+    position: [12, 8]
+  - name: "Pick-A4"
+    aisle: A4
+    position: [16, 8]
+  - name: "Pick-A5"
+    aisle: A5
+    position: [20, 8]
+
+# Horizontal corridors
+corridors:
+  top:
+    row: 1
+    col_start: 0
+    col_end: 21
+  bottom:
+    row: 15
+    col_start: 0
+    col_end: 21
+  middle:
+    row: 8
+    col_start: 0
+    col_end: 21

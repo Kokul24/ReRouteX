@@ -1,0 +1,38 @@
+# Configuration
+simulation:
+  fps: 30
+  tick_rate: 5          # simulation steps per second
+  window_width: 1600
+  window_height: 900
+  random_seed: 42
+
+# Grid settings
+grid:
+  cell_size: 40
+  rows: 18
+  cols: 22
+
+# Cost weights
+costs:
+  movement: 1
+  congestion_penalty: 3
+  battery_penalty_weight: 0.5
+  workload_penalty_weight: 2.0
+  delay_penalty_weight: 1.5
+  priority_bonus_weight: 3.0
+  safety_radius: 2        # cells around human
+
+# Battery
+battery:
+  low_threshold: 20       # percent
+  critical_threshold: 10
+  drain_per_step: 0.15
+  charge_per_step: 2.0
+
+# Task generation
+tasks:
+  auto_generate: true
+  generation_interval: 80  # ticks between auto-generated orders
+  surge_count: 5
+  urgent_priority: 10
+  normal_priority_range: [1, 5]

@@ -1,0 +1,25 @@
+robots:
+  - id: R1
+    start: [2, 1]
+    battery: 100
+    speed: 1
+
+  - id: R2
+    start: [6, 1]
+    battery: 100
+    speed: 1
+
+  - id: R3
+    start: [10, 1]
+    battery: 95
+    speed: 1
+
+  - id: R4
+    start: [14, 1]
+    battery: 100
+    speed: 1
+
+  - id: R5
+    start: [18, 1]
+    battery: 90
+    speed: 1

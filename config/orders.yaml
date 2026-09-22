@@ -1,0 +1,21 @@
+# Pre-defined orders to keep robots busy at start
+orders:
+  - id: O101
+    pickup_aisle: A1
+    priority: 3
+
+  - id: O102
+    pickup_aisle: A3
+    priority: 2
+
+  - id: O103
+    pickup_aisle: A5
+    priority: 4
+
+  - id: O104
+    pickup_aisle: A2
+    priority: 2
+
+  - id: O105
+    pickup_aisle: A4
+    priority: 3
