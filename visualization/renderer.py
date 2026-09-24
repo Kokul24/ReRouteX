@@ -141,9 +141,9 @@ class Renderer:
             32
         )
 
-        # Quick-action buttons
+        # Quick-action buttons (rebuilt every frame from live state — see _build_buttons)
         self.buttons: List[dict] = []
-        self._init_buttons()
+        self._build_buttons({})
 
         # Terminal scroll
         self.terminal_scroll = 0
@@ -151,34 +151,78 @@ class Renderer:
         # Animation tick
         self.anim_tick = 0
 
-    def _init_buttons(self):
-        """Initialize quick-action buttons below the warehouse grid."""
+    def _build_buttons(self, robots: dict):
+        """
+        Rebuild the quick-action buttons below the warehouse grid from the
+        current warehouse/robot state.
+
+        Buttons are generated dynamically for every configured aisle and
+        robot (never hard-coded IDs), and are context-sensitive: only the
+        action that is currently meaningful is shown (e.g. UNBLOCK only
+        while an aisle is blocked, RECOVER only while a robot is FAILED).
+        Every button's 'command' is a plain string fed straight into the
+        same command parser the typed command bar uses, so buttons and
+        typed commands stay perfectly in sync.
+        """
         btn_y = self.grid_offset_y + self.warehouse.rows * self.cell_size + 15
-        btn_w = 115
-        btn_h = 26
-        gap = 6
-        x = self.grid_offset_x
+        btn_w = 92
+        btn_h = 22
+        gap = 4
+        x0 = self.grid_offset_x
+        available_w = self.grid_area_width - 2 * self.grid_offset_x
+        per_row = max(1, (available_w + gap) // (btn_w + gap))
 
-        button_defs = [
-            ("BLOCK A3", Colors.BTN_DANGER),
-            ("UNBLOCK A3", Colors.BTN_SUCCESS),
-            ("LOW BATTERY R3", Colors.BTN_BG),
-            ("ROBOT FAILURE R2", Colors.BTN_DANGER),
-            ("HUMAN ENTER A2", Colors.BTN_BG),
-            ("URGENT ORDER", Colors.BTN_BG),
-            ("ORDER SURGE", Colors.BTN_BG),
-            ("STATUS", Colors.BTN_BG),
-        ]
+        defs: List[Tuple[str, str, Tuple[int, int, int]]] = []
 
-        for i, (label, color) in enumerate(button_defs):
-            bx = x + (i % 4) * (btn_w + gap)
-            by = btn_y + (i // 4) * (btn_h + gap)
-            self.buttons.append({
+        # Aisle block / unblock — one button per configured aisle
+        for aisle in self.warehouse.aisle_names:
+            if aisle in self.warehouse.blocked_aisles:
+                defs.append((f"UNBLOCK {aisle}", f"UNBLOCK {aisle}", Colors.BTN_SUCCESS))
+            else:
+                defs.append((f"BLOCK {aisle}", f"BLOCK {aisle}", Colors.BTN_DANGER))
+
+        # Human enter / remove — one button per configured aisle
+        for aisle in self.warehouse.aisle_names:
+            if aisle in self.warehouse.human_positions:
+                defs.append((f"HUMAN- {aisle}", f"HUMAN REMOVE {aisle}", Colors.BTN_BG))
+            else:
+                defs.append((f"HUMAN+ {aisle}", f"HUMAN ENTER {aisle}", Colors.BTN_BG))
+
+        # Robot fail / recover — one button per configured robot
+        for rid, robot in robots.items():
+            if robot.status == RobotStatus.FAILED:
+                defs.append((f"RECOVER {rid}", f"RECOVER {rid}", Colors.BTN_SUCCESS))
+            else:
+                defs.append((f"FAIL {rid}", f"FAIL {rid}", Colors.BTN_DANGER))
+
+        # Robot low battery / restore — one button per configured robot
+        # (skipped for FAILED robots, since charging is not meaningful there)
+        for rid, robot in robots.items():
+            if robot.status == RobotStatus.FAILED:
+                continue
+            if robot.status in (RobotStatus.LOW_BATTERY, RobotStatus.CHARGING):
+                defs.append((f"CHARGE {rid}", f"RESTORE BATTERY {rid}", Colors.BTN_SUCCESS))
+            else:
+                defs.append((f"LOW BAT {rid}", f"LOW BATTERY {rid}", Colors.BTN_BG))
+
+        # Static extras
+        defs.append(("URGENT ORDER", "URGENT ORDER", Colors.BTN_BG))
+        defs.append(("ORDER SURGE", "ORDER SURGE", Colors.BTN_BG))
+        defs.append(("STATUS", "STATUS", Colors.BTN_BG))
+
+        buttons = []
+        for i, (label, command, color) in enumerate(defs):
+            col = i % per_row
+            row = i // per_row
+            bx = x0 + col * (btn_w + gap)
+            by = btn_y + row * (btn_h + gap)
+            buttons.append({
                 'rect': pygame.Rect(bx, by, btn_w, btn_h),
                 'label': label,
-                'command': label,
+                'command': command,
                 'color': color,
             })
+        self.buttons = buttons
 
     def get_command_bar_rect(self) -> pygame.Rect:
         """Return the command bar rectangle for click detection."""
@@ -221,7 +265,8 @@ class Renderer:
         # Draw title bar
         self._draw_title_bar(tick, paused, metrics)
 
-        # Draw quick-action buttons
+        # Rebuild + draw quick-action buttons (dynamic, context-sensitive)
+        self._build_buttons(robots)
         self._draw_buttons()
 
         # Draw right panel

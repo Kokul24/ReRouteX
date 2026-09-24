@@ -30,8 +30,11 @@ python main.py
 | `RESTORE BATTERY R3` | Restore battery |
 | `ROBOT FAILURE R2` | Simulate robot failure |
 | `RESTORE ROBOT R2` | Restore failed robot |
+| `FAIL R2` | Alias for `ROBOT FAILURE R2` |
+| `RECOVER R2` | Alias for `RESTORE ROBOT R2` (only valid while R2 is FAILED) |
 | `HUMAN ENTER A2` | Human enters aisle |
 | `HUMAN EXIT A2` | Human exits aisle |
+| `HUMAN REMOVE A2` / `REMOVE HUMAN A2` | Alias for `HUMAN EXIT A2` |
 | `URGENT ORDER` | Add high-priority order |
 | `ORDER SURGE` | Flash sale simulation |
 | `STATUS` | Show system status |

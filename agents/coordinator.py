@@ -699,6 +699,23 @@ class FleetCoordinator:
 
         return explanation
 
+    def handle_robot_recover(self, robot_id: str) -> List[str]:
+        """
+        Handle a RECOVER request. Validates that the robot is actually
+        FAILED before delegating to the existing restore logic, so an
+        accidental RECOVER on a healthy robot doesn't silently reset it.
+        """
+        robot = self.robots.get(robot_id)
+        if not robot:
+            return [f"[ERROR] {robot_id} does not exist.",
+                    f"Available robots: {', '.join(self.robots.keys())}"]
+
+        if robot.status != RobotStatus.FAILED:
+            return [f"[ERROR] {robot_id} is not currently in FAILED state.",
+                    f"Current status: {robot.status.name}"]
+
+        return self.handle_restore_robot(robot_id)
+
     def handle_human_enter(self, aisle_name: str) -> List[str]:
         """Handle human entering an aisle."""
         if aisle_name not in self.warehouse.aisle_names:
@@ -971,6 +988,15 @@ class FleetCoordinator:
             f"  STATUS            Show system status",
             f"  HELP              Show this help",
             f"  TERMINATE         End simulation",
+            f"",
+            f"  Aliases:",
+            f"  FAIL R2           Same as ROBOT FAILURE R2",
+            f"  RECOVER R2        Same as RESTORE ROBOT R2 (only if FAILED)",
+            f"  HUMAN REMOVE A2   Same as HUMAN EXIT A2",
+            f"  REMOVE HUMAN A2   Same as HUMAN EXIT A2",
+            f"",
+            f"  Configured aisles: {', '.join(self.warehouse.aisle_names)}",
+            f"  Configured robots: {', '.join(self.robots.keys())}",
         ]
 
     def get_terminate_summary(self) -> List[str]:

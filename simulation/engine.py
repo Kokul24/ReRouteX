@@ -186,12 +186,36 @@ class SimulationEngine:
                 lines = self.coordinator.handle_restore_robot(robot_id)
                 self._add_terminal_lines(lines)
 
+            elif len(parts) >= 2 and parts[0] == "FAIL":
+                # Alias for ROBOT FAILURE <id>
+                robot_id = parts[1]
+                lines = self.coordinator.handle_robot_failure(robot_id)
+                self._add_terminal_lines(lines)
+
+            elif len(parts) >= 2 and parts[0] == "RECOVER":
+                # Alias for RESTORE ROBOT <id>, but only valid if the robot is FAILED
+                robot_id = parts[1]
+                lines = self.coordinator.handle_robot_recover(robot_id)
+                self._add_terminal_lines(lines)
+
             elif len(parts) >= 3 and parts[0] == "HUMAN" and parts[1] == "ENTER":
                 aisle = parts[2]
                 lines = self.coordinator.handle_human_enter(aisle)
                 self._add_terminal_lines(lines)
 
             elif len(parts) >= 3 and parts[0] == "HUMAN" and parts[1] == "EXIT":
+                aisle = parts[2]
+                lines = self.coordinator.handle_human_exit(aisle)
+                self._add_terminal_lines(lines)
+
+            elif len(parts) >= 3 and parts[0] == "HUMAN" and parts[1] == "REMOVE":
+                # Alias for HUMAN EXIT <aisle>
+                aisle = parts[2]
+                lines = self.coordinator.handle_human_exit(aisle)
+                self._add_terminal_lines(lines)
+
+            elif len(parts) >= 3 and parts[0] == "REMOVE" and parts[1] == "HUMAN":
+                # Alias for HUMAN EXIT <aisle>
                 aisle = parts[2]
                 lines = self.coordinator.handle_human_exit(aisle)
                 self._add_terminal_lines(lines)
