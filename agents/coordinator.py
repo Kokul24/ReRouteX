@@ -86,6 +86,18 @@ class FleetCoordinator:
         return {rid: r.pos_tuple for rid, r in self.robots.items()
                 if r.status != RobotStatus.FAILED}
 
+    def _get_failed_robot_cells(self) -> set:
+        """
+        Cells physically held by FAILED robots.
+
+        A failed robot cannot move aside, so its cell is a hard obstacle for
+        path planning until it is recovered. Active robots are deliberately
+        NOT included here -- they are handled by the existing congestion
+        penalty and the reservation table.
+        """
+        return {r.pos_tuple for r in self.robots.values()
+                if r.status == RobotStatus.FAILED}
+
     # ================================================================
     # TASK ASSIGNMENT
     # ================================================================
@@ -220,12 +232,19 @@ class FleetCoordinator:
         else:
             return
 
+        # Failed robots are immobile obstacles: exclude their cells from the
+        # search so no route is ever planned through a broken-down robot.
+        blocked_cells = self._get_failed_robot_cells()
+        blocked_cells.discard(robot.pos_tuple)
+        blocked_cells.discard(goal)
+
         result = astar_search(
             start=robot.pos_tuple,
             goal=goal,
             warehouse=self.warehouse,
             robot_id=robot.robot_id,
             robot_positions=self._get_robot_positions(),
+            reserved_cells=blocked_cells,
             congestion_weight=self.congestion_weight,
         )
 
@@ -257,7 +276,7 @@ class FleetCoordinator:
                         warehouse=self.warehouse,
                         robot_id=robot.robot_id,
                         robot_positions=self._get_robot_positions(),
-                        reserved_cells=conflict_cells,
+                        reserved_cells=conflict_cells | blocked_cells,
                         congestion_weight=self.congestion_weight,
                     )
                     if alt_result.found:
@@ -590,25 +609,39 @@ class FleetCoordinator:
                     f"Available robots: {', '.join(self.robots.keys())}"]
 
         saved_task = robot.current_task
+        failed_cell = robot.pos_tuple
+        task_str = (saved_task.order.order_id
+                    if saved_task and saved_task.order.order_id != "CHARGE" else "None")
+
+        # force_stop() also releases the task, so the failed robot and its
+        # replacement can never both hold the same Task object.
         robot.force_stop()
         self.reservation_table.clear_robot(robot_id)
         self._add_event(f"{robot_id} FAILED")
 
         explanation = [
             f"{'='*50}",
-            f"[FAILURE] {robot_id} UNAVAILABLE",
+            f"[ROBOT FAILURE] {robot_id}",
             f"{'='*50}",
+            f"",
+            f"Robot {robot_id} has failed.",
+            f"Current task: {task_str}",
+            f"{robot_id} removed from active fleet.",
+            f"Previous path/reservations invalidated.",
+            f"Position held at ({failed_cell[0]},{failed_cell[1]}) -",
+            f"  cell now treated as an obstacle.",
             f"",
         ]
 
         self._add_message("Coordinator", "ALL",
                           f"ALERT: {robot_id} has failed. Initiating recovery.")
+        self._add_message("Coordinator", "ALL",
+                          f"{robot_id} is stopped at ({failed_cell[0]},{failed_cell[1]}). "
+                          f"Reservations released. Cell is blocked for planning.")
 
         if saved_task and saved_task.order.order_id != "CHARGE":
-            explanation.append(f"[TASK]")
+            explanation.append(f"[TASK REASSIGNMENT]")
             explanation.append(f"  {saved_task.order.order_id} was assigned to {robot_id}.")
-            explanation.append(f"")
-            explanation.append(f"[COORDINATOR]")
             explanation.append(f"  Evaluating available robots for reassignment.")
             explanation.append(f"")
 
@@ -646,20 +679,52 @@ class FleetCoordinator:
                     saved_task.order.status = OrderStatus.ASSIGNED
                     saved_task.phase = TaskPhase.GO_TO_PICKUP
                     best.assign_task(saved_task)
-                    self._plan_robot_path(best, saved_task)
+                    start_cell = best.pos_tuple
 
                     explanation.extend([
                         f"",
                         f"[DECISION]",
-                        f"  Assign {saved_task.order.order_id} → {best.robot_id}",
+                        f"  {saved_task.order.order_id} reassigned to {best.robot_id}.",
+                        f"  Reason: lowest cost under the existing",
+                        f"  allocation logic.",
                         f"",
-                        f"[ALGORITHM] A* for route planning",
+                        f"[PATH REPLANNING]",
                     ])
+
+                    if best.current_task is saved_task:
+                        # Took it up straight away: plan from where it stands now
+                        self._plan_robot_path(best, saved_task)
+                        explanation.extend([
+                            f"  {best.robot_id} planning from its current position",
+                            f"  ({start_cell[0]},{start_cell[1]}).",
+                            f"  Existing A* planner used.",
+                            f"  Collision/reservation constraints considered.",
+                            f"  {robot_id} cell ({failed_cell[0]},{failed_cell[1]}) excluded.",
+                        ])
+                        if best.current_path:
+                            explanation.append(f"  New path length: {len(best.current_path)} steps")
+                        else:
+                            explanation.append(f"  No route available yet. {best.robot_id} holds.")
+                    else:
+                        # Queued behind the job it is already running. Its route is
+                        # planned by the normal tick loop once it frees up, so its
+                        # current path must NOT be overwritten here.
+                        running = (best.current_task.order.order_id
+                                   if best.current_task else "current task")
+                        explanation.extend([
+                            f"  {best.robot_id} is still running {running}.",
+                            f"  {saved_task.order.order_id} queued behind it.",
+                            f"  Route planned by A* when {best.robot_id} frees up.",
+                            f"  Current route left untouched.",
+                        ])
+                    explanation.append(f"")
+                    explanation.append(f"[ALGORITHM] A* for route planning")
 
                     self._add_message("Coordinator", best.robot_id,
                                       f"Task {saved_task.order.order_id} reassigned from failed {robot_id}.")
                     self._add_message(best.robot_id, "Coordinator",
-                                      f"Task accepted. Calculating route.")
+                                      f"Task accepted. Planning new route from {best.position}, "
+                                      f"avoiding {robot_id} at ({failed_cell[0]},{failed_cell[1]}).")
                     self._add_event(f"Task {saved_task.order.order_id}: {robot_id} → {best.robot_id}")
             else:
                 saved_task.order.status = OrderStatus.PENDING
@@ -667,6 +732,45 @@ class FleetCoordinator:
                 explanation.append(f"  No available candidates. Task queued.")
         else:
             explanation.append(f"[INFO] {robot_id} had no active task.")
+
+        # ── SAFETY CHECK ──
+        # Any other robot already en route through the failed robot's cell
+        # must be rerouted now, using the existing replanning mechanism.
+        explanation.append(f"")
+        explanation.append(f"[SAFETY CHECK]")
+        explanation.append(f"  Checking robot-robot conflicts...")
+
+        rerouted = []
+        for other in self.robots.values():
+            if other.robot_id == robot_id or other.status == RobotStatus.FAILED:
+                continue
+            remaining = other.current_path[other.path_index:] if other.current_path else []
+            if failed_cell not in remaining:
+                continue
+
+            other.reroute_count += 1
+            self.total_replans += 1
+            self.conflicts_prevented += 1
+            self.reservation_table.clear_robot(other.robot_id)
+            self._add_message("Coordinator", other.robot_id,
+                              f"Your route crosses failed {robot_id} at "
+                              f"({failed_cell[0]},{failed_cell[1]}). Replan required.")
+            if other.current_task:
+                other.status = RobotStatus.REROUTING
+                self._plan_robot_path(other, other.current_task)
+                self._add_message(other.robot_id, "Coordinator",
+                                  f"Rerouting around {robot_id}.")
+            else:
+                other.current_path = []
+                other.status = RobotStatus.IDLE
+            rerouted.append(other.robot_id)
+
+        if rerouted:
+            explanation.append(f"  Rerouted around {robot_id}: {', '.join(rerouted)}")
+        else:
+            explanation.append(f"  No active robot was routed through")
+            explanation.append(f"  ({failed_cell[0]},{failed_cell[1]}).")
+        explanation.append(f"  No overlapping movement allowed.")
 
         return explanation
 
@@ -1084,19 +1188,47 @@ class FleetCoordinator:
                 self._add_message(robot.robot_id, "Coordinator",
                                   f"Battery low: {robot.battery:.0f}%. Requesting guidance.")
 
-        # Collision check for moving robots
+        # Edge-swap check: A moved X->Y while B moved Y->X in the same tick.
+        # Undo both steps so neither robot passes through the other, then let
+        # the existing WAITING-resume logic replan one of them.
+        movers = [r for r in self.robots.values()
+                  if r.moved_this_tick and r.previous_position is not None]
+        for i, a in enumerate(movers):
+            for b in movers[i + 1:]:
+                if not (a.moved_this_tick and b.moved_this_tick):
+                    continue
+                if (a.pos_tuple == b.previous_position.to_tuple()
+                        and b.pos_tuple == a.previous_position.to_tuple()):
+                    a.revert_move()
+                    b.revert_move()
+                    b.status = RobotStatus.WAITING
+                    b.waiting_time = 0
+                    self.conflicts_prevented += 1
+                    self._add_message("Coordinator", b.robot_id,
+                                      f"Head-on swap with {a.robot_id} prevented. "
+                                      f"Move undone. Wait and replan.")
+                    self._add_event(f"Edge-swap prevented: {a.robot_id} vs {b.robot_id}")
+
+        # Cell-occupancy check. Seeded with FAILED robots, which hold their
+        # cell until recovery and cannot move aside.
         positions = {}
+        for robot in self.robots.values():
+            if robot.status == RobotStatus.FAILED:
+                positions[robot.pos_tuple] = robot.robot_id
+
         for robot in self.robots.values():
             if robot.status in (RobotStatus.MOVING, RobotStatus.REROUTING):
                 pt = robot.pos_tuple
                 if pt in positions:
                     other_id = positions[pt]
-                    # Make one robot wait
+                    # Step back so the two robots never share a cell
+                    robot.revert_move()
                     robot.status = RobotStatus.WAITING
                     robot.waiting_time = 0
                     self.conflicts_prevented += 1
                     self._add_message("Coordinator", robot.robot_id,
                                       f"Collision risk with {other_id}. Wait 1 step.")
+                    positions.setdefault(robot.pos_tuple, robot.robot_id)
                 else:
                     positions[pt] = robot.robot_id
 

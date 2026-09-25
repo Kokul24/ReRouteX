@@ -32,6 +32,12 @@ class RobotAgent:
         self.path_index: int = 0
         self.target: Optional[Position] = None
 
+        # Last step taken, so a move can be undone when the coordinator
+        # detects a cell conflict or a head-on swap after the fact
+        self.previous_position: Optional[Position] = None
+        self.previous_path_index: int = 0
+        self.moved_this_tick: bool = False
+
         # Metrics
         self.total_distance: int = 0
         self.waiting_time: int = 0
@@ -103,6 +109,7 @@ class RobotAgent:
     def tick(self, warehouse, battery_drain: float, tick_num: int):
         """Execute one simulation tick."""
         self.outgoing_messages.clear()
+        self.moved_this_tick = False
 
         if self.status == RobotStatus.FAILED:
             return
@@ -162,6 +169,9 @@ class RobotAgent:
             return
 
         next_pos = self.current_path[self.path_index]
+        self.previous_position = Position(self.position.col, self.position.row)
+        self.previous_path_index = self.path_index
+        self.moved_this_tick = True
         self.position = Position(next_pos[0], next_pos[1])
         self.path_index += 1
         self.total_distance += 1
@@ -203,11 +213,32 @@ class RobotAgent:
                 self.status = RobotStatus.IDLE
             self.current_path = []
 
+    def revert_move(self) -> bool:
+        """
+        Undo the single step taken this tick and stay on the previous cell.
+
+        Used by the coordinator when a move would put this robot on a cell
+        another robot already holds, or would swap it head-on with another
+        robot. Returns False if there was no step to undo.
+        """
+        if not self.moved_this_tick or self.previous_position is None:
+            return False
+        self.position = self.previous_position
+        self.path_index = self.previous_path_index
+        self.total_distance = max(0, self.total_distance - 1)
+        self.moved_this_tick = False
+        return True
+
     def force_stop(self):
         """Force the robot to stop (failure)."""
         self.status = RobotStatus.FAILED
         self.current_path = []
         self.path_index = 0
+        # Release the task: the coordinator hands it to another robot, so
+        # this robot must not keep a reference to it (the caller saves it first)
+        self.current_task = None
+        self.target = None
+        self.moved_this_tick = False
 
     def restore(self):
         """Restore robot from failure."""
