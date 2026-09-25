@@ -451,6 +451,14 @@ class FleetCoordinator:
             return [f"[ERROR] {robot_id} does not exist.",
                     f"Available robots: {', '.join(self.robots.keys())}"]
 
+        # Determine whether the robot has an active order with package NOT yet
+        # collected (i.e. still travelling toward the pickup location).
+        has_uncollected_task = (
+            robot.current_task is not None
+            and robot.current_task.order.order_id != "CHARGE"
+            and robot.current_task.phase == TaskPhase.GO_TO_PICKUP
+        )
+
         robot.set_low_battery(8.0)
         self._add_event(f"{robot_id} LOW BATTERY")
 
@@ -494,37 +502,88 @@ class FleetCoordinator:
             f"",
         ])
 
-        if robot.battery < estimated_battery_needed:
-            explanation.append(f"[DECISION]")
-            explanation.append(f"  {robot_id} cannot safely complete current task.")
-            explanation.append(f"  → {robot_id} → Charging Station")
+        # ── PRE-PICKUP LOW BATTERY ──────────────────────────────────
+        # When the user explicitly triggers LOW BATTERY and the robot
+        # has NOT yet collected its package, we ALWAYS interrupt,
+        # redirect to charging, and reassign the order.  The battery
+        # comparison is irrelevant because the user is forcing the
+        # event – and the robot is at 8 % anyway.
+        if has_uncollected_task or robot.battery < estimated_battery_needed:
+            saved_task = robot.current_task
+            saved_order_id = (saved_task.order.order_id
+                              if saved_task and saved_task.order.order_id != "CHARGE"
+                              else None)
+
+            if has_uncollected_task:
+                explanation.extend([
+                    f"[CURRENT TASK]",
+                    f"  {robot_id} was travelling to the pickup location.",
+                    f"  Package has NOT been collected.",
+                    f"",
+                    f"[DECISION]",
+                    f"  {robot_id} cannot continue the current pickup operation.",
+                    f"  Current route invalidated.",
+                    f"  {robot_id} redirected to charging.",
+                    f"  → {robot_id} → Charging Station",
+                ])
+            else:
+                explanation.extend([
+                    f"[DECISION]",
+                    f"  {robot_id} cannot safely complete current task.",
+                    f"  → {robot_id} → Charging Station",
+                ])
 
             self._add_message("Coordinator", robot_id,
                               f"Battery insufficient. Go to charging station immediately.")
             self._add_message(robot_id, "Coordinator",
                               f"Understood. Heading to charging station.")
 
-            # Save current task for reassignment
-            saved_task = robot.current_task
+            # ── 1. Detach the current task from the robot ──
             robot.current_task = None
             robot.current_path = []
-            robot.status = RobotStatus.LOW_BATTERY
+            robot.path_index = 0
+            robot.target = None
 
-            # Plan path to charging
+            # ── 2. Clear this robot's reservations ──
+            self.reservation_table.clear_robot(robot_id)
+
+            # ── 3. Plan path to charging station ──
             charge_task = Task(
                 order=Order("CHARGE", "", 0),
                 phase=TaskPhase.GO_TO_CHARGE,
             )
             robot.current_task = charge_task
+            robot.status = RobotStatus.LOW_BATTERY
             self._plan_robot_path(robot, charge_task)
 
-            # Reassign task
-            if saved_task and saved_task.order.order_id != "CHARGE":
+            # _plan_robot_path calls robot.set_path which sets status
+            # to MOVING.  LOW_BATTERY is not handled by robot.tick()
+            # for movement, so the robot MUST be MOVING to traverse
+            # the charge path.  set_path already does this when the
+            # path is non-empty, but if the path was empty we fall
+            # back to CHARGING immediately (robot is already on the
+            # charging cell).
+            if robot.current_path:
+                robot.status = RobotStatus.MOVING
+            else:
+                robot.status = RobotStatus.CHARGING
+                robot.charge_wait = 0
+
+            # ── 4. Reassign the interrupted order ──
+            if saved_task and saved_order_id:
                 saved_task.order.status = OrderStatus.REASSIGNED
                 saved_task.order.assigned_robot = None
-                explanation.append(f"")
-                explanation.append(f"[TASK REASSIGNMENT]")
-                explanation.append(f"  Task {saved_task.order.order_id} needs reassignment.")
+
+                explanation.extend([
+                    f"",
+                    f"[TASK REASSIGNMENT]",
+                    f"  Task {saved_order_id} needs reassignment.",
+                ])
+
+                if has_uncollected_task:
+                    explanation.append(
+                        f"  Package remains at pickup location (not collected)."
+                    )
 
                 # Find replacement
                 candidates = [r for r in self.robots.values()
@@ -550,13 +609,38 @@ class FleetCoordinator:
                         best.assign_task(saved_task)
                         self._plan_robot_path(best, saved_task)
 
-                        explanation.append(f"")
-                        explanation.append(f"  Task reassigned → {best.robot_id}")
+                        explanation.extend([
+                            f"",
+                            f"[REASSIGNMENT]",
+                            f"  {saved_order_id} → {best.robot_id}",
+                            f"",
+                            f"[PATH PLANNING]",
+                            f"  A* calculates a new route for {best.robot_id}",
+                            f"  to the pickup location.",
+                        ])
+                        if best.current_path:
+                            explanation.append(
+                                f"  New path length: {len(best.current_path)} steps"
+                            )
+
+                        explanation.extend([
+                            f"",
+                            f"[RESULT]",
+                            f"  {robot_id} → CHARGING",
+                            f"  {best.robot_id} → PICKUP",
+                            f"  Order remains active.",
+                        ])
+
                         self._add_message("Coordinator", best.robot_id,
-                                          f"Task {saved_task.order.order_id} reassigned to you from {robot_id}.")
+                                          f"Task {saved_order_id} reassigned to you from {robot_id}.")
                         self._add_message(best.robot_id, "Coordinator",
-                                          f"Task {saved_task.order.order_id} accepted. Planning route.")
-                        self._add_event(f"Task {saved_task.order.order_id}: {robot_id} → {best.robot_id}")
+                                          f"Task {saved_order_id} accepted. Planning route.")
+                        self._add_event(f"Task {saved_order_id}: {robot_id} → {best.robot_id}")
+                    else:
+                        # Put back to pending
+                        saved_task.order.status = OrderStatus.PENDING
+                        self.pending_orders.append(saved_task.order)
+                        explanation.append(f"  No available robot. Task returned to queue.")
                 else:
                     # Put back to pending
                     saved_task.order.status = OrderStatus.PENDING
@@ -1161,8 +1245,35 @@ class FleetCoordinator:
                     # Robot finished picking – plan path to packing station
                     self._plan_robot_path(robot, task)
                 elif task.phase == TaskPhase.GO_TO_CHARGE:
-                    # Robot needs to go charge
-                    self._plan_robot_path(robot, task)
+                    # Robot is IDLE with a charge task → charging is complete.
+                    # (It arrived, charged, and robot.tick() set it to IDLE.)
+                    # Clear the charge task and return the robot to the packing
+                    # station so it re-enters the normal task-ready workflow.
+                    robot.current_task = None
+                    self.reservation_table.clear_robot(robot.robot_id)
+                    packing_goal = self.warehouse.packing_pos.to_tuple()
+                    blocked = self._get_failed_robot_cells()
+                    blocked.discard(robot.pos_tuple)
+                    blocked.discard(packing_goal)
+                    result = astar_search(
+                        start=robot.pos_tuple,
+                        goal=packing_goal,
+                        warehouse=self.warehouse,
+                        robot_id=robot.robot_id,
+                        robot_positions=self._get_robot_positions(),
+                        reserved_cells=blocked,
+                        congestion_weight=self.congestion_weight,
+                    )
+                    if result.found and result.path:
+                        self.reservation_table.reserve_path(
+                            robot.robot_id, result.path, self.current_tick
+                        )
+                        robot.set_path(result.path, self.warehouse.packing_pos)
+                        self._add_message(
+                            "Coordinator", robot.robot_id,
+                            f"Charging complete. Returning to packing station."
+                        )
+                        self._add_event(f"{robot.robot_id} returning to packing station")
                 elif task.phase == TaskPhase.DONE:
                     task.order.status = OrderStatus.COMPLETED
                     task.order.completed_tick = tick_num
